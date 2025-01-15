@@ -13,7 +13,6 @@ use rand_xoshiro::Seed512;
 use rand_xoshiro::Xoshiro512PlusPlus;
 use ringlog::*;
 use std::error::Error;
-use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -62,6 +61,9 @@ struct Args {
 
     #[arg(long)]
     cache_name: String,
+
+    #[arg(long, short)]
+    verbose: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn Error>> {
@@ -79,7 +81,17 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         .enable_all()
         .build()?;
 
-    let level = Level::Info;
+    let level = if args.verbose {
+        Level::Debug
+    } else {
+        Level::Info
+    };
+
+    let level_filter = if args.verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
 
     let debug_log = if level <= Level::Info {
         LogBuilder::new().format(ringlog::default_format)
@@ -93,7 +105,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     .expect("failed to initialize debug log");
 
     let mut log = MultiLogBuilder::new()
-        .level_filter(LevelFilter::Info)
+        .level_filter(level_filter)
         .default(debug_log)
         .build()
         .start();

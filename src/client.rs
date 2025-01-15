@@ -55,6 +55,9 @@ struct Args {
 
     #[arg(long, default_value_t = 1)]
     count: usize,
+
+    #[arg(long, short)]
+    verbose: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn Error>> {
@@ -67,7 +70,17 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         .enable_all()
         .build()?;
 
-    let level = Level::Info;
+    let level = if args.verbose {
+        Level::Debug
+    } else {
+        Level::Info
+    };
+
+    let level_filter = if args.verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
 
     let debug_log = if level <= Level::Info {
         LogBuilder::new().format(ringlog::default_format)
@@ -81,7 +94,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     .expect("failed to initialize debug log");
 
     let mut log = MultiLogBuilder::new()
-        .level_filter(LevelFilter::Info)
+        .level_filter(level_filter)
         .default(debug_log)
         .build()
         .start();
