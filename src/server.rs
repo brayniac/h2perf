@@ -1,3 +1,6 @@
+use std::time::Duration;
+use tokio::time::sleep;
+use ringlog::*;
 use std::net::SocketAddr;
 use clap::Parser;
 use std::sync::atomic::Ordering;
@@ -39,6 +42,33 @@ struct Args {
 pub async fn main() {
     let args = Args::parse();
 
+        let level = Level::Info;
+
+    let debug_log = if level <= Level::Info {
+        LogBuilder::new().format(ringlog::default_format)
+    } else {
+        LogBuilder::new()
+    }
+    .output(Box::new(Stderr::new()))
+    .log_queue_depth(1024)
+    .single_message_size(4096)
+    .build()
+    .expect("failed to initialize debug log");
+
+    let mut log = MultiLogBuilder::new()
+        .level_filter(LevelFilter::Info)
+        .default(debug_log)
+        .build()
+        .start();
+
+    // spawn logging thread
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_millis(1)).await;
+            let _ = log.flush();
+        }
+    });
+
     let listener = TcpListener::bind(args.listen).await.unwrap();
 
     // initialize a prng
@@ -74,7 +104,7 @@ pub async fn main() {
                     tokio::spawn(async move {
 
                         let (mut request, mut respond) = request.unwrap();
-                        println!("Received request: {:?}", request);
+                        info!("Received request: {:?}", request);
 
                         #[allow(clippy::match_single_binding)]
                         match request.uri().path() {
@@ -111,7 +141,7 @@ pub async fn main() {
                                 while let Some(data) = body.data().await {
                                     let data = data.unwrap();
 
-                                    println!("RX: {} bytes", data.len());
+                                    info!("RX: {} bytes", data.len());
 
                                     received += data.len();
                                     chunks += 1;
@@ -119,7 +149,7 @@ pub async fn main() {
                                     let _ = body.flow_control().release_capacity(data.len());
                                 }
 
-                                println!("total received: {received} in {chunks} chunks");
+                                info!("total received: {received} in {chunks} chunks");
 
                                 // Build a response with no body
                                 let response = Response::builder()

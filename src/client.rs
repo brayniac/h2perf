@@ -1,3 +1,6 @@
+use std::time::Duration;
+use tokio::time::sleep;
+use ringlog::*;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -54,6 +57,33 @@ struct Args {
 pub async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
+    let level = Level::Info;
+
+    let debug_log = if level <= Level::Info {
+        LogBuilder::new().format(ringlog::default_format)
+    } else {
+        LogBuilder::new()
+    }
+    .output(Box::new(Stderr::new()))
+    .log_queue_depth(1024)
+    .single_message_size(4096)
+    .build()
+    .expect("failed to initialize debug log");
+
+    let mut log = MultiLogBuilder::new()
+        .level_filter(LevelFilter::Info)
+        .default(debug_log)
+        .build()
+        .start();
+
+    // spawn logging thread
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_millis(1)).await;
+            let _ = log.flush();
+        }
+    });
+
     // initialize a prng
     let mut rng = Xoshiro512PlusPlus::from_seed(Seed512::default());
 
@@ -99,7 +129,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
             let (head, mut body) = response.await?.into_parts();
 
-            println!("Received response: {:?}", head);
+            info!("Received response: {:?}", head);
 
             // The `flow_control` handle allows the caller to manage
             // flow control.
@@ -114,7 +144,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
             while let Some(chunk) = body.data().await {
                 let chunk = chunk?;
-                println!("RX: {:?} bytes", chunk.len());
+                info!("RX: {:?} bytes", chunk.len());
 
                 received += chunk.len();
                 chunks += 1;
@@ -123,11 +153,11 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 let _ = flow_control.release_capacity(chunk.len());
             }
 
-            println!("data received: {received} in {chunks} chunks");
+            info!("data received: {received} in {chunks} chunks");
 
             let latency = start.elapsed().as_micros();
 
-            println!("latency: {latency} us");
+            info!("latency: {latency} us");
         }
         Op::Put => {
             let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -141,7 +171,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             // Prepare the HTTP request to send to the server.
             let request = Request::builder()
                             .method(Method::PUT)
-                            .uri(&format!("https://{}/put", args.target))
+                            .uri(format!("https://{}/put", args.target))
                             .body(())
                             .unwrap();
 
@@ -166,7 +196,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
 
-                println!("TX: {available} bytes");
+                info!("TX: {available} bytes");
 
                 if end >= value.len() {
                     stream.send_data(value.slice(idx..value.len()), true).unwrap();
@@ -179,18 +209,18 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 chunks += 1;
             }
 
-            println!("data transmitted: {size} bytes in {chunks} chunks");
+            info!("data transmitted: {size} bytes in {chunks} chunks");
 
             let latency = start.elapsed().as_micros();
-            println!("transmission took: {latency} us");
+            info!("transmission took: {latency} us");
 
             stream.reserve_capacity(0);
 
-            println!("waiting on response...");
+            info!("waiting on response...");
 
             let (head, mut body) = response.await?.into_parts();
 
-            println!("Received response: {:?}", head);
+            info!("Received response: {:?}", head);
 
             // The `flow_control` handle allows the caller to manage
             // flow control.
@@ -205,17 +235,17 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             while let Some(chunk) = body.data().await {
                 chunks += 1;
                 let chunk = chunk?;
-                println!("RX: {:?} bytes", chunk.len());
+                info!("RX: {:?} bytes", chunk.len());
 
                 // Let the server send more data.
                 let _ = flow_control.release_capacity(chunk.len());
             }
 
-            println!("data received in {chunks} chunks");
+            info!("data received in {chunks} chunks");
 
             let latency = start.elapsed().as_micros();
 
-            println!("latency: {latency} us");
+            info!("latency: {latency} us");
         }
     }
 
