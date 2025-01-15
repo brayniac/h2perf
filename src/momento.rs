@@ -277,12 +277,13 @@ async fn client(args: Args, token: String) -> Result<(), Box<dyn Error>> {
 
                 while idx < value.len() {
                     stream.reserve_capacity(value.len() - idx);
-                    let available = stream.capacity();
+                    let mut available = stream.capacity();
 
                     let end = idx + available;
 
+                    // default minimum of a 16KB frame...
                     if available == 0 {
-                        continue;
+                        available = 16384;
                     }
 
                     debug!("TX: {available} bytes");
