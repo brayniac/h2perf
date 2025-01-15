@@ -130,11 +130,14 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 // Send the request. The second tuple item allows the caller
                 // to stream a request body.
                 let (response, _) = h2.send_request(request, true).unwrap();
-                info!("Request sent. Waiting for response...");
+
+                let request_latency = start.elapsed().as_micros();
+
+                debug!("Request sent. Waiting for response...");
 
                 let (head, mut body) = response.await?.into_parts();
 
-                info!("Received response: {:?}", head);
+                debug!("Received response: {:?}", head);
 
                 // The `flow_control` handle allows the caller to manage
                 // flow control.
@@ -164,6 +167,10 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
                 let latency = start.elapsed().as_micros();
 
+                let response_latency = latency - request_latency;
+
+                info!("DATA: TX: 0 bytes RX: {received} bytes LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
+
                 info!("data received: {received} in {chunks} chunks with latency: {latency} us");
             }
             Op::Put => {
@@ -187,8 +194,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 // Send the request. The second tuple item allows the caller
                 // to stream a request body.
                 let (response, mut stream) = h2.send_request(request, false).unwrap();
-
-                // stream.send_data(value, true).unwrap();
+                debug!("Request sent. Sending data...");
 
                 let mut idx = 0;
                 let mut chunks = 0;
@@ -203,7 +209,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                         continue;
                     }
 
-                    info!("TX: {available} bytes");
+                    debug!("TX: {available} bytes");
 
                     if end >= value.len() {
                         stream
@@ -218,18 +224,16 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                     chunks += 1;
                 }
 
-                info!("data transmitted: {size} bytes in {chunks} chunks");
+                let request_latency = start.elapsed().as_micros();
+                debug!("data transmitted: {size} bytes in {chunks} chunks in: {request_latency} us");
 
-                let latency = start.elapsed().as_micros();
-                info!("transmission took: {latency} us");
+                stream.reserve_capacity(1024);
 
-                stream.reserve_capacity(0);
-
-                info!("waiting on response...");
+                debug!("waiting on response...");
 
                 let (head, mut body) = response.await?.into_parts();
 
-                info!("Received response: {:?}", head);
+                debug!("Received response: {:?}", head);
 
                 // The `flow_control` handle allows the caller to manage
                 // flow control.
@@ -240,21 +244,26 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 let mut flow_control = body.flow_control().clone();
 
                 let mut chunks = 0;
+                let mut received = 0;
 
                 while let Some(chunk) = body.data().await {
-                    chunks += 1;
                     let chunk = chunk?;
-                    info!("RX: {:?} bytes", chunk.len());
+
+                    chunks += 1;
+                    received += chunk.len();
+
+                    debug!("RX: {:?} bytes", chunk.len());
 
                     // Let the server send more data.
                     let _ = flow_control.release_capacity(chunk.len());
                 }
 
-                info!("data received in {chunks} chunks");
+                debug!("data received in {chunks} chunks");
 
                 let latency = start.elapsed().as_micros();
+                let response_latency = latency - request_latency;
 
-                info!("latency: {latency} us");
+                info!("DATA: TX: {size} bytes RX: {received} bytes LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
             }
         }
     }
