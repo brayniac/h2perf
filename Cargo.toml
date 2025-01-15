@@ -11,6 +11,10 @@ path = "src/client.rs"
 name = "h2perf-server"
 path = "src/server.rs"
 
+[[bin]]
+name = "h2perf-momento"
+path = "src/momento.rs"
+
 [dependencies]
 bytes = "1.9.0"
 clap = { version = "4.5.26", features = ["derive"] }
@@ -19,4 +23,7 @@ http = "1.2.0"
 rand = "0.8.5"
 rand_xoshiro = "0.6.0"
 ringlog = "0.8.0"
+rustls = "0.23.21"
 tokio = { version = "1.43.0", features = ["full"] }
+tokio-rustls = "0.26.1"
+webpki-roots = "0.26.7"
