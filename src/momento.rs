@@ -1,3 +1,8 @@
+use http::Version;
+use rustls::pki_types::ServerName;
+use tokio_rustls::TlsConnector;
+use rustls::RootCertStore;
+use http::Uri;
 use bytes::Bytes;
 use bytes::BytesMut;
 use clap::Parser;
@@ -9,7 +14,6 @@ use rand_xoshiro::Seed512;
 use rand_xoshiro::Xoshiro512PlusPlus;
 use ringlog::*;
 use std::error::Error;
-use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -34,7 +38,7 @@ enum Op {
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(long)]
-    target: SocketAddr,
+    target: Uri,
 
     #[arg(long, value_enum)]
     op: Op,
@@ -56,12 +60,20 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     count: usize,
 
+    #[arg(long)]
+    cache_name: String,
+
     #[arg(long, short)]
     verbose: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+
+    let token = std::env::var("MOMENTO_API_KEY").unwrap_or_else(|_| {
+        eprintln!("environment variable `MOMENTO_API_KEY` is not set");
+        std::process::exit(1);
+    });
 
     let rt = Builder::new_multi_thread()
         .worker_threads(4)
@@ -108,10 +120,10 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Spawn the root task
-    rt.block_on(async { client(args).await })
+    rt.block_on(async { client(args, token).await })
 }
 
-async fn client(args: Args) -> Result<(), Box<dyn Error>> {
+async fn client(args: Args, token: String) -> Result<(), Box<dyn Error>> {
     // initialize a prng
     let mut rng = Xoshiro512PlusPlus::from_seed(Seed512::default());
 
@@ -122,16 +134,44 @@ async fn client(args: Args) -> Result<(), Box<dyn Error>> {
 
     let vbuf = Arc::new(vbuf.freeze());
 
+    let root_store = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.into(),
+    };
+
+    let tlsconfig = Arc::new(rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth());
+
+    let auth = args.target
+        .authority()
+        .expect("uri has no authority")
+        .clone();
+
+    let port = auth.port_u16().unwrap_or(443);
+
+    let addr = tokio::net::lookup_host((auth.host(), port))
+        .await?
+        .next()
+        .expect("dns found no addresses");
+
+
     // Establish TCP connection to the server.
-    let tcp = TcpStream::connect(args.target).await?;
+    let tcp = TcpStream::connect(addr).await?;
 
     tcp.set_nodelay(true).expect("failed to set TCP_NODELAY");
+
+    let connector: TlsConnector = TlsConnector::from(tlsconfig.clone());
+
+    let tls = connector
+        .connect(ServerName::try_from(auth.host().to_string()).unwrap(), tcp)
+        .await
+        .unwrap();
 
     let (h2, connection) = h2::client::Builder::new()
         .initial_window_size(args.window)
         .initial_connection_window_size(args.conn_window)
         .max_frame_size(args.frame)
-        .handshake(tcp)
+        .handshake(tls)
         .await?;
 
     tokio::spawn(async move {
@@ -145,8 +185,10 @@ async fn client(args: Args) -> Result<(), Box<dyn Error>> {
             Op::Get => {
                 // Prepare the HTTP request to send to the server.
                 let request = Request::builder()
+                    .version(Version::HTTP_2)
                     .method(Method::GET)
-                    .uri(format!("https://{}/get?{}", args.target, args.size))
+                    .uri(format!("{}cache/{}?key={}", args.target, args.cache_name, args.size))
+                    .header("authorization", token.clone())
                     .body(())
                     .unwrap();
 
@@ -219,10 +261,14 @@ async fn client(args: Args) -> Result<(), Box<dyn Error>> {
 
                 // Prepare the HTTP request to send to the server.
                 let request = Request::builder()
+                    .version(Version::HTTP_2)
                     .method(Method::PUT)
-                    .uri(format!("https://{}/put", args.target))
+                    .header("authorization", token.clone())
+                    .uri(format!("{}cache/{}?key={}&ttl_seconds=900", args.target, args.cache_name, args.size))
                     .body(())
                     .unwrap();
+
+                debug!("Prepared request: {:?}", request);
 
                 let start = Instant::now();
 
@@ -236,13 +282,16 @@ async fn client(args: Args) -> Result<(), Box<dyn Error>> {
 
                 while idx < value.len() {
                     stream.reserve_capacity(value.len() - idx);
-                    let available = stream.capacity();
+                    let mut available = stream.capacity();
+
+                    debug!("STREAM: available: {available} bytes");
+
+                    // default minimum of a 16KB frame...
+                    if available == 0 {
+                        available = 16384;
+                    }
 
                     let end = idx + available;
-
-                    if available == 0 {
-                        continue;
-                    }
 
                     debug!("TX: {available} bytes");
 

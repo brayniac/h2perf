@@ -7,7 +7,6 @@ use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Seed512;
 use rand_xoshiro::Xoshiro512PlusPlus;
 use ringlog::*;
-use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -38,6 +37,9 @@ struct Args {
 
     #[arg(long, default_value_t = 16 * KB)]
     frame: u32,
+
+    #[arg(long, short)]
+    verbose: bool,
 }
 
 #[tokio::main]
@@ -52,7 +54,17 @@ pub async fn main() {
         .build()
         .expect("failed to initialize runtime");
 
-    let level = Level::Info;
+    let level = if args.verbose {
+        Level::Debug
+    } else {
+        Level::Info
+    };
+
+    let level_filter = if args.verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
 
     let debug_log = if level <= Level::Info {
         LogBuilder::new().format(ringlog::default_format)
@@ -66,7 +78,7 @@ pub async fn main() {
     .expect("failed to initialize debug log");
 
     let mut log = MultiLogBuilder::new()
-        .level_filter(LevelFilter::Info)
+        .level_filter(level_filter)
         .default(debug_log)
         .build()
         .start();
