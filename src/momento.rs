@@ -187,7 +187,7 @@ async fn client(args: Args, token: String) -> Result<(), Box<dyn Error>> {
                 let request = Request::builder()
                     .version(Version::HTTP_2)
                     .method(Method::GET)
-                    .uri(format!("{}/cache/{}?key={}", args.target, args.cache_name, args.size))
+                    .uri(format!("{}cache/{}?key={}", args.target, args.cache_name, args.size))
                     .header("authorization", token.clone())
                     .body(())
                     .unwrap();
@@ -264,7 +264,7 @@ async fn client(args: Args, token: String) -> Result<(), Box<dyn Error>> {
                     .version(Version::HTTP_2)
                     .method(Method::PUT)
                     .header("authorization", token.clone())
-                    .uri(format!("{}/cache/{}?key={}&ttl_seconds=900", args.target, args.cache_name, args.size))
+                    .uri(format!("{}cache/{}?key={}&ttl_seconds=900", args.target, args.cache_name, args.size))
                     .body(())
                     .unwrap();
 
