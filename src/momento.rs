@@ -265,6 +265,8 @@ async fn client(args: Args, token: String) -> Result<(), Box<dyn Error>> {
                     .body(())
                     .unwrap();
 
+                debug!("Prepared request: {:?}", request);
+
                 let start = Instant::now();
 
                 // Send the request. The second tuple item allows the caller
