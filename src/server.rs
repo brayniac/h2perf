@@ -48,6 +48,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .worker_threads(4)
         .thread_name("h2perf-worker")
         .thread_stack_size(3 * 1024 * 1024)
+        .enable_all()
         .build()?;
 
     let level = Level::Info;
