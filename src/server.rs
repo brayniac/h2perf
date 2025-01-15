@@ -103,6 +103,9 @@ async fn server(args: Args) {
     // Accept all incoming TCP connections.
     loop {
         if let Ok((socket, _peer_addr)) = listener.accept().await {
+
+            socket.set_nodelay(true).expect("failed to set TCP_NODELAY");
+
             let vbuf = vbuf.clone();
 
             // Spawn a new task to process each connection.
@@ -125,7 +128,7 @@ async fn server(args: Args) {
 
                         let start = Instant::now();
 
-                        info!("Received request: {:?}", request);
+                        debug!("Received request: {:?}", request);
 
                         #[allow(clippy::match_single_binding)]
                         match request.uri().path() {

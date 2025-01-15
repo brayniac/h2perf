@@ -112,6 +112,8 @@ async fn client(args: Args) -> Result<(), Box<dyn Error>> {
     // Establish TCP connection to the server.
     let tcp = TcpStream::connect(args.target).await?;
 
+    tcp.set_nodelay(true).expect("failed to set TCP_NODELAY");
+
     let (h2, connection) = h2::client::Builder::new()
         .initial_window_size(args.window)
         .initial_connection_window_size(args.conn_window)
