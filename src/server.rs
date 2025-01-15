@@ -41,7 +41,7 @@ struct Args {
 }
 
 #[tokio::main]
-pub async fn main() -> Result<(), Box<dyn Error>> {
+pub async fn main() {
     let args = Args::parse();
 
     let rt = Builder::new_multi_thread()
@@ -49,7 +49,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .thread_name("h2perf-worker")
         .thread_stack_size(3 * 1024 * 1024)
         .enable_all()
-        .build()?;
+        .build()
+        .expect("failed to initialize runtime");
 
     let level = Level::Info;
 
@@ -79,13 +80,16 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Spawn the root task
-    rt.block_on(async {
+    rt.spawn(async {
         server(args).await
-    })
+    });
 
+    loop {
+        std::thread::sleep(Duration::from_secs(1))
+    }
 }
 
-async fn server(args: Args) -> Result<(), Box<dyn Error>> {
+async fn server(args: Args) {
 
     let listener = TcpListener::bind(args.listen).await.unwrap();
 
