@@ -139,39 +139,47 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
                 debug!("Received response: {:?}", head);
 
-                // The `flow_control` handle allows the caller to manage
-                // flow control.
-                //
-                // Whenever data is received, the caller is responsible for
-                // releasing capacity back to the server once it has freed
-                // the data from memory.
-                let mut flow_control = body.flow_control().clone();
+                let (rx_bytes, rx_chunks) = if body.is_end_stream() {
+                    (0, 0)
+                } else {
+                    // The `flow_control` handle allows the caller to manage
+                    // flow control.
+                    //
+                    // Whenever data is received, the caller is responsible for
+                    // releasing capacity back to the server once it has freed
+                    // the data from memory.
+                    let mut flow_control = body.flow_control().clone();
 
-                // release all capacity that we can release
-                let used = flow_control.used_capacity();
-                let _ = flow_control.release_capacity(used);
+                    // release all capacity that we can release
+                    let used = flow_control.used_capacity();
+                    let _ = flow_control.release_capacity(used);
 
-                let mut received = 0;
-                let mut chunks = 0;
+                    let mut received = 0;
+                    let mut chunks = 0;
 
-                while let Some(chunk) = body.data().await {
-                    let chunk = chunk?;
-                    debug!("RX: {:?} bytes", chunk.len());
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk?;
+                        debug!("RX: {:?} bytes", chunk.len());
 
-                    received += chunk.len();
-                    chunks += 1;
+                        received += chunk.len();
+                        chunks += 1;
 
-                    // Let the server send more data.
-                    let _ = flow_control.release_capacity(chunk.len());
-                }
+                        // Let the server send more data.
+                        let _ = flow_control.release_capacity(chunk.len());
+                    }
+
+                    (received, chunks)
+                };
 
                 let latency = start.elapsed().as_micros();
 
                 let response_latency = latency - request_latency;
 
-                info!("DATA: TX: 0 bytes RX: {received} bytes LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
+                info!("DATA: TX: 0 bytes in 0 chunks RX: {rx_bytes} bytes in {rx_chunks} chunks LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
 
-                info!("data received: {received} in {chunks} chunks with latency: {latency} us");
+                debug!(
+                    "data received: {rx_bytes} in {rx_chunks} chunks with latency: {latency} us"
+                );
             }
             Op::Put => {
                 let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -197,7 +205,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 debug!("Request sent. Sending data...");
 
                 let mut idx = 0;
-                let mut chunks = 0;
+                let mut tx_chunks = 0;
 
                 while idx < value.len() {
                     stream.reserve_capacity(value.len() - idx);
@@ -221,11 +229,13 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                         idx = end;
                     }
 
-                    chunks += 1;
+                    tx_chunks += 1;
                 }
 
                 let request_latency = start.elapsed().as_micros();
-                debug!("data transmitted: {size} bytes in {chunks} chunks in: {request_latency} us");
+                debug!(
+                    "data transmitted: {size} bytes in {tx_chunks} chunks in: {request_latency} us"
+                );
 
                 stream.reserve_capacity(1024);
 
@@ -235,35 +245,41 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
                 debug!("Received response: {:?}", head);
 
-                // The `flow_control` handle allows the caller to manage
-                // flow control.
-                //
-                // Whenever data is received, the caller is responsible for
-                // releasing capacity back to the server once it has freed
-                // the data from memory.
-                let mut flow_control = body.flow_control().clone();
+                let (rx_bytes, rx_chunks) = if body.is_end_stream() {
+                    (0, 0)
+                } else {
+                    // The `flow_control` handle allows the caller to manage
+                    // flow control.
+                    //
+                    // Whenever data is received, the caller is responsible for
+                    // releasing capacity back to the server once it has freed
+                    // the data from memory.
+                    let mut flow_control = body.flow_control().clone();
 
-                let mut chunks = 0;
-                let mut received = 0;
+                    let mut chunks = 0;
+                    let mut received = 0;
 
-                while let Some(chunk) = body.data().await {
-                    let chunk = chunk?;
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk?;
 
-                    chunks += 1;
-                    received += chunk.len();
+                        chunks += 1;
+                        received += chunk.len();
 
-                    debug!("RX: {:?} bytes", chunk.len());
+                        debug!("RX: {:?} bytes", chunk.len());
 
-                    // Let the server send more data.
-                    let _ = flow_control.release_capacity(chunk.len());
-                }
+                        // Let the server send more data.
+                        let _ = flow_control.release_capacity(chunk.len());
+                    }
 
-                debug!("data received in {chunks} chunks");
+                    debug!("data received in {chunks} chunks");
+
+                    (received, chunks)
+                };
 
                 let latency = start.elapsed().as_micros();
                 let response_latency = latency - request_latency;
 
-                info!("DATA: TX: {size} bytes RX: {received} bytes LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
+                info!("DATA: TX: {size} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
             }
         }
     }
