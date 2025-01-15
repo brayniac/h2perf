@@ -119,11 +119,14 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 .body(())
                 .unwrap();
 
+            info!("Prepared request: {:?}", request);
+
             let start = Instant::now();
 
             // Send the request. The second tuple item allows the caller
             // to stream a request body.
             let (response, _) = h2.send_request(request, true).unwrap();
+            info!("Request sent. Waiting for response...");
 
             let (head, mut body) = response.await?.into_parts();
 
