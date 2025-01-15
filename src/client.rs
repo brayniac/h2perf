@@ -253,5 +253,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    std::thread::sleep(Duration::from_millis(5));
+
     Ok(())
 }
