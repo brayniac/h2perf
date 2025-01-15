@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::net::TcpStream;
+use tokio::runtime::Builder;
 use tokio::time::sleep;
 
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -51,11 +52,20 @@ struct Args {
 
     #[arg(long, default_value_t = 16 * KB)]
     frame: u32,
+
+    #[arg(long, default_value_t = 1)]
+    count: usize,
 }
 
-#[tokio::main]
-pub async fn main() -> Result<(), Box<dyn Error>> {
+pub fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+
+    let rt = Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("h2perf-worker")
+        .thread_stack_size(3 * 1024 * 1024)
+        .enable_all()
+        .build()?;
 
     let level = Level::Info;
 
@@ -77,13 +87,18 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .start();
 
     // spawn logging thread
-    tokio::spawn(async move {
+    rt.spawn(async move {
         loop {
             sleep(Duration::from_millis(1)).await;
             let _ = log.flush();
         }
     });
 
+    // Spawn the root task
+    rt.block_on(async { client(args).await })
+}
+
+async fn client(args: Args) -> Result<(), Box<dyn Error>> {
     // initialize a prng
     let mut rng = Xoshiro512PlusPlus::from_seed(Seed512::default());
 
@@ -97,6 +112,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     // Establish TCP connection to the server.
     let tcp = TcpStream::connect(args.target).await?;
 
+    tcp.set_nodelay(true).expect("failed to set TCP_NODELAY");
+
     let (h2, connection) = h2::client::Builder::new()
         .initial_window_size(args.window)
         .initial_connection_window_size(args.conn_window)
@@ -108,151 +125,179 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         connection.await.unwrap();
     });
 
-    let mut h2: h2::client::SendRequest<Bytes> = h2.ready().await?;
+    for _ in 0..args.count {
+        let mut h2: h2::client::SendRequest<Bytes> = h2.clone().ready().await?;
 
-    match args.op {
-        Op::Get => {
-            // Prepare the HTTP request to send to the server.
-            let request = Request::builder()
-                .method(Method::GET)
-                .uri(format!("https://{}/get?{}", args.target, args.size))
-                .body(())
-                .unwrap();
+        match args.op {
+            Op::Get => {
+                // Prepare the HTTP request to send to the server.
+                let request = Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("https://{}/get?{}", args.target, args.size))
+                    .body(())
+                    .unwrap();
 
-            info!("Prepared request: {:?}", request);
+                debug!("Prepared request: {:?}", request);
 
-            let start = Instant::now();
+                let start = Instant::now();
 
-            // Send the request. The second tuple item allows the caller
-            // to stream a request body.
-            let (response, _) = h2.send_request(request, true).unwrap();
-            info!("Request sent. Waiting for response...");
+                // Send the request. The second tuple item allows the caller
+                // to stream a request body.
+                let (response, _) = h2.send_request(request, true).unwrap();
 
-            let (head, mut body) = response.await?.into_parts();
+                let request_latency = start.elapsed().as_micros();
 
-            info!("Received response: {:?}", head);
+                debug!("Request sent. Waiting for response...");
 
-            // The `flow_control` handle allows the caller to manage
-            // flow control.
-            //
-            // Whenever data is received, the caller is responsible for
-            // releasing capacity back to the server once it has freed
-            // the data from memory.
-            let mut flow_control = body.flow_control().clone();
+                let (head, mut body) = response.await?.into_parts();
 
-            // release all capacity that we can release
-            let used = flow_control.used_capacity();
-            let _ = flow_control.release_capacity(used);
+                debug!("Received response: {:?}", head);
 
-            let mut received = 0;
-            let mut chunks = 0;
-
-            while let Some(chunk) = body.data().await {
-                let chunk = chunk?;
-                info!("RX: {:?} bytes", chunk.len());
-
-                received += chunk.len();
-                chunks += 1;
-
-                // Let the server send more data.
-                let _ = flow_control.release_capacity(chunk.len());
-            }
-
-            info!("data received: {received} in {chunks} chunks");
-
-            let latency = start.elapsed().as_micros();
-
-            info!("latency: {latency} us");
-        }
-        Op::Put => {
-            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-
-            let size: usize = args.size;
-            let start = sequence % (vbuf.len() - size);
-            let end = start + size;
-
-            let value = vbuf.slice(start..end);
-
-            // Prepare the HTTP request to send to the server.
-            let request = Request::builder()
-                .method(Method::PUT)
-                .uri(format!("https://{}/put", args.target))
-                .body(())
-                .unwrap();
-
-            let start = Instant::now();
-
-            // Send the request. The second tuple item allows the caller
-            // to stream a request body.
-            let (response, mut stream) = h2.send_request(request, false).unwrap();
-
-            // stream.send_data(value, true).unwrap();
-
-            let mut idx = 0;
-            let mut chunks = 0;
-
-            while idx < value.len() {
-                stream.reserve_capacity(value.len() - idx);
-                let available = stream.capacity();
-
-                let end = idx + available;
-
-                if available == 0 {
-                    continue;
-                }
-
-                info!("TX: {available} bytes");
-
-                if end >= value.len() {
-                    stream
-                        .send_data(value.slice(idx..value.len()), true)
-                        .unwrap();
-                    break;
+                let (rx_bytes, rx_chunks) = if body.is_end_stream() {
+                    (0, 0)
                 } else {
-                    stream.send_data(value.slice(idx..end), false).unwrap();
-                    idx = end;
+                    // The `flow_control` handle allows the caller to manage
+                    // flow control.
+                    //
+                    // Whenever data is received, the caller is responsible for
+                    // releasing capacity back to the server once it has freed
+                    // the data from memory.
+                    let mut flow_control = body.flow_control().clone();
+
+                    // release all capacity that we can release
+                    let used = flow_control.used_capacity();
+                    let _ = flow_control.release_capacity(used);
+
+                    let mut received = 0;
+                    let mut chunks = 0;
+
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk?;
+                        debug!("RX: {:?} bytes", chunk.len());
+
+                        received += chunk.len();
+                        chunks += 1;
+
+                        // Let the server send more data.
+                        let _ = flow_control.release_capacity(chunk.len());
+                    }
+
+                    (received, chunks)
+                };
+
+                let latency = start.elapsed().as_micros();
+
+                let response_latency = latency - request_latency;
+
+                let tx_bytes = 0;
+                let tx_chunks = 0;
+
+                info!("DATA: TX: {tx_bytes} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks");
+                info!("LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
+            }
+            Op::Put => {
+                let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+
+                let size: usize = args.size;
+                let start = sequence % (vbuf.len() - size);
+                let end = start + size;
+
+                let value = vbuf.slice(start..end);
+
+                // Prepare the HTTP request to send to the server.
+                let request = Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("https://{}/put", args.target))
+                    .body(())
+                    .unwrap();
+
+                let start = Instant::now();
+
+                // Send the request. The second tuple item allows the caller
+                // to stream a request body.
+                let (response, mut stream) = h2.send_request(request, false).unwrap();
+                debug!("Request sent. Sending data...");
+
+                let mut idx = 0;
+                let mut tx_chunks = 0;
+
+                while idx < value.len() {
+                    stream.reserve_capacity(value.len() - idx);
+                    let available = stream.capacity();
+
+                    let end = idx + available;
+
+                    if available == 0 {
+                        continue;
+                    }
+
+                    debug!("TX: {available} bytes");
+
+                    if end >= value.len() {
+                        stream
+                            .send_data(value.slice(idx..value.len()), true)
+                            .unwrap();
+                        break;
+                    } else {
+                        stream.send_data(value.slice(idx..end), false).unwrap();
+                        idx = end;
+                    }
+
+                    tx_chunks += 1;
                 }
 
-                chunks += 1;
+                let request_latency = start.elapsed().as_micros();
+                debug!(
+                    "data transmitted: {size} bytes in {tx_chunks} chunks in: {request_latency} us"
+                );
+
+                stream.reserve_capacity(1024);
+
+                debug!("waiting on response...");
+
+                let (head, mut body) = response.await?.into_parts();
+
+                debug!("Received response: {:?}", head);
+
+                let (rx_bytes, rx_chunks) = if body.is_end_stream() {
+                    (0, 0)
+                } else {
+                    // The `flow_control` handle allows the caller to manage
+                    // flow control.
+                    //
+                    // Whenever data is received, the caller is responsible for
+                    // releasing capacity back to the server once it has freed
+                    // the data from memory.
+                    let mut flow_control = body.flow_control().clone();
+
+                    let mut chunks = 0;
+                    let mut received = 0;
+
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk?;
+
+                        chunks += 1;
+                        received += chunk.len();
+
+                        debug!("RX: {:?} bytes", chunk.len());
+
+                        // Let the server send more data.
+                        let _ = flow_control.release_capacity(chunk.len());
+                    }
+
+                    debug!("data received in {chunks} chunks");
+
+                    (received, chunks)
+                };
+
+                let latency = start.elapsed().as_micros();
+                let response_latency = latency - request_latency;
+
+                let tx_bytes = size;
+
+                info!("DATA: TX: {tx_bytes} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks");
+                info!("LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
             }
-
-            info!("data transmitted: {size} bytes in {chunks} chunks");
-
-            let latency = start.elapsed().as_micros();
-            info!("transmission took: {latency} us");
-
-            stream.reserve_capacity(0);
-
-            info!("waiting on response...");
-
-            let (head, mut body) = response.await?.into_parts();
-
-            info!("Received response: {:?}", head);
-
-            // The `flow_control` handle allows the caller to manage
-            // flow control.
-            //
-            // Whenever data is received, the caller is responsible for
-            // releasing capacity back to the server once it has freed
-            // the data from memory.
-            let mut flow_control = body.flow_control().clone();
-
-            let mut chunks = 0;
-
-            while let Some(chunk) = body.data().await {
-                chunks += 1;
-                let chunk = chunk?;
-                info!("RX: {:?} bytes", chunk.len());
-
-                // Let the server send more data.
-                let _ = flow_control.release_capacity(chunk.len());
-            }
-
-            info!("data received in {chunks} chunks");
-
-            let latency = start.elapsed().as_micros();
-
-            info!("latency: {latency} us");
         }
     }
 
