@@ -137,6 +137,10 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             // the data from memory.
             let mut flow_control = body.flow_control().clone();
 
+            // release all capacity that we can release
+            let used = flow_control.used_capacity();
+            let _ = flow_control.release_capacity(used);
+
             let mut received = 0;
             let mut chunks = 0;
 

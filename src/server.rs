@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
 
@@ -123,11 +124,46 @@ pub async fn main() {
                                 let response =
                                     Response::builder().status(StatusCode::OK).body(()).unwrap();
 
-                                // Send the response back to the client
-                                let mut response = respond.send_response(response, false).unwrap();
+                                let start = Instant::now();
 
-                                // Write the value to the client
-                                response.send_data(value, true).unwrap();
+                                // Send the response back to the client
+                                let mut stream = respond.send_response(response, false).unwrap();
+
+                                // Send the data back to the client
+                                let mut idx = 0;
+                                let mut chunks = 0;
+
+                                while idx < value.len() {
+                                    stream.reserve_capacity(value.len() - idx);
+
+                                    let mut available = stream.capacity();
+
+                                    // default minimum of a 16KB frame...
+                                    if available == 0 {
+                                        available = 16384;
+                                    }
+
+                                    info!("TX: {:?} bytes", available);
+
+                                    let end = idx + available;
+
+                                    if end >= value.len() {
+                                        stream
+                                            .send_data(value.slice(idx..value.len()), true)
+                                            .unwrap();
+                                        break;
+                                    } else {
+                                        stream.send_data(value.slice(idx..end), false).unwrap();
+                                        idx = end;
+                                    }
+
+                                    chunks += 1;
+                                }
+
+                                info!("data transmitted: {size} bytes in {chunks} chunks");
+
+                                let latency = start.elapsed().as_micros();
+                                info!("transmission took: {latency} us");
                             }
                             "/put" => {
                                 let mut received = 0;
