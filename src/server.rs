@@ -1,5 +1,3 @@
-use std::error::Error;
-use tokio::runtime::Builder;
 use bytes::BytesMut;
 use clap::Parser;
 use h2::server;
@@ -9,6 +7,7 @@ use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Seed512;
 use rand_xoshiro::Xoshiro512PlusPlus;
 use ringlog::*;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -16,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::net::TcpListener;
+use tokio::runtime::Builder;
 use tokio::time::sleep;
 
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -80,9 +80,7 @@ pub async fn main() {
     });
 
     // Spawn the root task
-    rt.spawn(async {
-        server(args).await
-    });
+    rt.spawn(async { server(args).await });
 
     loop {
         std::thread::sleep(Duration::from_secs(1))
@@ -90,7 +88,6 @@ pub async fn main() {
 }
 
 async fn server(args: Args) {
-
     let listener = TcpListener::bind(args.listen).await.unwrap();
 
     // initialize a prng
@@ -125,11 +122,52 @@ async fn server(args: Args) {
                     //spawn a new task for each stream
                     tokio::spawn(async move {
                         let (mut request, mut respond) = request.unwrap();
+
+                        let start = Instant::now();
+
                         info!("Received request: {:?}", request);
 
                         #[allow(clippy::match_single_binding)]
                         match request.uri().path() {
                             "/get" => {
+                                let body = request.body_mut();
+
+                                let (rx_bytes, rx_chunks) = if body.is_end_stream() {
+                                    (0, 0)
+                                } else {
+                                    // The `flow_control` handle allows the caller to manage
+                                    // flow control.
+                                    //
+                                    // Whenever data is received, the caller is responsible for
+                                    // releasing capacity back to the server once it has freed
+                                    // the data from memory.
+                                    let mut flow_control = body.flow_control().clone();
+
+                                    // release all capacity that we can release
+                                    let used = flow_control.used_capacity();
+                                    let _ = flow_control.release_capacity(used);
+
+                                    let mut received = 0;
+                                    let mut chunks = 0;
+
+                                    while let Some(chunk) = body.data().await {
+                                        let chunk = chunk.unwrap();
+                                        debug!("RX: {:?} bytes", chunk.len());
+
+                                        received += chunk.len();
+                                        chunks += 1;
+
+                                        // Let the server send more data.
+                                        let _ = flow_control.release_capacity(chunk.len());
+                                    }
+
+                                    (received, chunks)
+                                };
+
+                                let request_latency = start.elapsed().as_micros();
+
+                                // determine response payload
+
                                 let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
 
                                 let size: usize = request
@@ -137,23 +175,27 @@ async fn server(args: Args) {
                                     .query()
                                     .map(|v| v.parse().unwrap_or(1024))
                                     .unwrap_or(1024);
-                                let start = sequence % (vbuf.len() - size);
-                                let end = start + size;
+                                let idx = sequence % (vbuf.len() - size);
+                                let end = idx + size;
 
-                                let value = vbuf.slice(start..end);
+                                let value = vbuf.slice(idx..end);
 
                                 // Build a response with no body
                                 let response =
                                     Response::builder().status(StatusCode::OK).body(()).unwrap();
 
-                                let start = Instant::now();
-
                                 // Send the response back to the client
                                 let mut stream = respond.send_response(response, false).unwrap();
 
+                                debug!(
+                                    "sent headers... sending data... latency: {} us",
+                                    start.elapsed().as_micros()
+                                );
+
                                 // Send the data back to the client
                                 let mut idx = 0;
-                                let mut chunks = 0;
+                                let mut tx_chunks = 0;
+                                let tx_bytes = size;
 
                                 while idx < value.len() {
                                     stream.reserve_capacity(value.len() - idx);
@@ -165,7 +207,7 @@ async fn server(args: Args) {
                                         available = 16384;
                                     }
 
-                                    info!("TX: {:?} bytes", available);
+                                    debug!("TX: {:?} bytes", available);
 
                                     let end = idx + available;
 
@@ -179,34 +221,51 @@ async fn server(args: Args) {
                                         idx = end;
                                     }
 
-                                    chunks += 1;
+                                    tx_chunks += 1;
                                 }
-
-                                info!("data transmitted: {size} bytes in {chunks} chunks");
 
                                 let latency = start.elapsed().as_micros();
-                                info!("transmission took: {latency} us");
+                                let response_latency = latency - request_latency;
+
+                                info!("DATA: TX: {tx_bytes} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks");
+                                info!("LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
                             }
                             "/put" => {
-                                let mut received = 0;
-                                let mut chunks = 0;
-
                                 let body = request.body_mut();
 
-                                // keep receiving chunks of the body and releasing capacity
-                                // back to the sender as we receive more content
-                                while let Some(data) = body.data().await {
-                                    let data = data.unwrap();
+                                let (rx_bytes, rx_chunks) = if body.is_end_stream() {
+                                    (0, 0)
+                                } else {
+                                    // The `flow_control` handle allows the caller to manage
+                                    // flow control.
+                                    //
+                                    // Whenever data is received, the caller is responsible for
+                                    // releasing capacity back to the server once it has freed
+                                    // the data from memory.
+                                    let mut flow_control = body.flow_control().clone();
 
-                                    info!("RX: {} bytes", data.len());
+                                    // release all capacity that we can release
+                                    let used = flow_control.used_capacity();
+                                    let _ = flow_control.release_capacity(used);
 
-                                    received += data.len();
-                                    chunks += 1;
+                                    let mut received = 0;
+                                    let mut chunks = 0;
 
-                                    let _ = body.flow_control().release_capacity(data.len());
-                                }
+                                    while let Some(chunk) = body.data().await {
+                                        let chunk = chunk.unwrap();
+                                        debug!("RX: {:?} bytes", chunk.len());
 
-                                info!("total received: {received} in {chunks} chunks");
+                                        received += chunk.len();
+                                        chunks += 1;
+
+                                        // Let the server send more data.
+                                        let _ = flow_control.release_capacity(chunk.len());
+                                    }
+
+                                    (received, chunks)
+                                };
+
+                                let request_latency = start.elapsed().as_micros();
 
                                 // Build a response with no body
                                 let response =
@@ -214,6 +273,15 @@ async fn server(args: Args) {
 
                                 // Send the response back to the client
                                 respond.send_response(response, true).unwrap();
+
+                                let tx_bytes = 0;
+                                let tx_chunks = 0;
+
+                                let latency = start.elapsed().as_micros();
+                                let response_latency = latency - request_latency;
+
+                                info!("DATA: TX: {tx_bytes} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks");
+                                info!("LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
                             }
                             _ => {
                                 // Build a response with no body

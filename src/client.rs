@@ -1,4 +1,3 @@
-use tokio::runtime::Builder;
 use bytes::Bytes;
 use bytes::BytesMut;
 use clap::Parser;
@@ -17,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::net::TcpStream;
+use tokio::runtime::Builder;
 use tokio::time::sleep;
 
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -95,9 +95,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Spawn the root task
-    rt.block_on(async {
-        client(args).await
-    })
+    rt.block_on(async { client(args).await })
 }
 
 async fn client(args: Args) -> Result<(), Box<dyn Error>> {
@@ -189,11 +187,11 @@ async fn client(args: Args) -> Result<(), Box<dyn Error>> {
 
                 let response_latency = latency - request_latency;
 
-                info!("DATA: TX: 0 bytes in 0 chunks RX: {rx_bytes} bytes in {rx_chunks} chunks LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
+                let tx_bytes = 0;
+                let tx_chunks = 0;
 
-                debug!(
-                    "data received: {rx_bytes} in {rx_chunks} chunks with latency: {latency} us"
-                );
+                info!("DATA: TX: {tx_bytes} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks");
+                info!("LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
             }
             Op::Put => {
                 let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -293,7 +291,10 @@ async fn client(args: Args) -> Result<(), Box<dyn Error>> {
                 let latency = start.elapsed().as_micros();
                 let response_latency = latency - request_latency;
 
-                info!("DATA: TX: {size} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
+                let tx_bytes = size;
+
+                info!("DATA: TX: {tx_bytes} bytes in {tx_chunks} chunks RX: {rx_bytes} bytes in {rx_chunks} chunks");
+                info!("LATENCY: REQUEST: {request_latency} us RESPONSE: {response_latency} us TOTAL: {latency} us");
             }
         }
     }
