@@ -1,19 +1,19 @@
-use std::time::Duration;
-use tokio::time::sleep;
-use ringlog::*;
-use std::net::SocketAddr;
-use clap::Parser;
-use std::sync::atomic::Ordering;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
-use rand_xoshiro::rand_core::RngCore;
-use rand_xoshiro::Seed512;
-use rand_xoshiro::rand_core::SeedableRng;
-use rand_xoshiro::Xoshiro512PlusPlus;
 use bytes::BytesMut;
+use clap::Parser;
 use h2::server;
 use http::{Response, StatusCode};
+use rand_xoshiro::rand_core::RngCore;
+use rand_xoshiro::rand_core::SeedableRng;
+use rand_xoshiro::Seed512;
+use rand_xoshiro::Xoshiro512PlusPlus;
+use ringlog::*;
+use std::net::SocketAddr;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::time::sleep;
 
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
@@ -37,12 +37,11 @@ struct Args {
     frame: u32,
 }
 
-
 #[tokio::main]
 pub async fn main() {
     let args = Args::parse();
 
-        let level = Level::Info;
+    let level = Level::Info;
 
     let debug_log = if level <= Level::Info {
         LogBuilder::new().format(ringlog::default_format)
@@ -84,7 +83,6 @@ pub async fn main() {
     // Accept all incoming TCP connections.
     loop {
         if let Ok((socket, _peer_addr)) = listener.accept().await {
-
             let vbuf = vbuf.clone();
 
             // Spawn a new task to process each connection.
@@ -93,16 +91,16 @@ pub async fn main() {
                 let mut h2 = server::Builder::new()
                     .initial_window_size(args.window)
                     .initial_connection_window_size(args.conn_window)
-                    .handshake(socket).await.unwrap();
+                    .handshake(socket)
+                    .await
+                    .unwrap();
                 // Accept all inbound HTTP/2 streams sent over the
                 // connection.
                 while let Some(request) = h2.accept().await {
-
                     let vbuf = vbuf.clone();
 
                     //spawn a new task for each stream
                     tokio::spawn(async move {
-
                         let (mut request, mut respond) = request.unwrap();
                         info!("Received request: {:?}", request);
 
@@ -111,21 +109,22 @@ pub async fn main() {
                             "/get" => {
                                 let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
 
-                                let size: usize = request.uri().query().map(|v| v.parse().unwrap_or(1024)).unwrap_or(1024);
+                                let size: usize = request
+                                    .uri()
+                                    .query()
+                                    .map(|v| v.parse().unwrap_or(1024))
+                                    .unwrap_or(1024);
                                 let start = sequence % (vbuf.len() - size);
                                 let end = start + size;
 
                                 let value = vbuf.slice(start..end);
 
                                 // Build a response with no body
-                                let response = Response::builder()
-                                    .status(StatusCode::OK)
-                                    .body(())
-                                    .unwrap();
+                                let response =
+                                    Response::builder().status(StatusCode::OK).body(()).unwrap();
 
                                 // Send the response back to the client
-                                let mut response = respond.send_response(response, false)
-                                    .unwrap();
+                                let mut response = respond.send_response(response, false).unwrap();
 
                                 // Write the value to the client
                                 response.send_data(value, true).unwrap();
@@ -152,30 +151,23 @@ pub async fn main() {
                                 info!("total received: {received} in {chunks} chunks");
 
                                 // Build a response with no body
-                                let response = Response::builder()
-                                    .status(StatusCode::OK)
-                                    .body(())
-                                    .unwrap();
+                                let response =
+                                    Response::builder().status(StatusCode::OK).body(()).unwrap();
 
                                 // Send the response back to the client
-                                respond.send_response(response, true)
-                                    .unwrap();
+                                respond.send_response(response, true).unwrap();
                             }
                             _ => {
                                 // Build a response with no body
-                                let response = Response::builder()
-                                    .status(StatusCode::OK)
-                                    .body(())
-                                    .unwrap();
+                                let response =
+                                    Response::builder().status(StatusCode::OK).body(()).unwrap();
 
                                 // Send the response back to the client
-                                respond.send_response(response, true)
-                                    .unwrap();
+                                respond.send_response(response, true).unwrap();
                             }
                         }
                     });
                 }
-
             });
         }
     }

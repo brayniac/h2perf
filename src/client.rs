@@ -1,22 +1,22 @@
-use std::time::Duration;
-use tokio::time::sleep;
+use bytes::Bytes;
+use bytes::BytesMut;
+use clap::Parser;
+use clap::ValueEnum;
+use http::{Method, Request};
+use rand::RngCore;
+use rand::SeedableRng;
+use rand_xoshiro::Seed512;
+use rand_xoshiro::Xoshiro512PlusPlus;
 use ringlog::*;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use rand::RngCore;
-use rand::SeedableRng;
-use rand_xoshiro::Xoshiro512PlusPlus;
-use rand_xoshiro::Seed512;
-use bytes::BytesMut;
 use std::sync::Arc;
-use clap::ValueEnum;
+use std::time::Duration;
 use std::time::Instant;
-use clap::Parser;
-use bytes::Bytes;
-use http::{Request, Method};
-use std::error::Error;
 use tokio::net::TcpStream;
+use tokio::time::sleep;
 
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
@@ -108,18 +108,16 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         connection.await.unwrap();
     });
 
-
-
     let mut h2: h2::client::SendRequest<Bytes> = h2.ready().await?;
 
     match args.op {
         Op::Get => {
             // Prepare the HTTP request to send to the server.
             let request = Request::builder()
-                            .method(Method::GET)
-                            .uri(format!("https://{}/get?{}", args.target, args.size))
-                            .body(())
-                            .unwrap();
+                .method(Method::GET)
+                .uri(format!("https://{}/get?{}", args.target, args.size))
+                .body(())
+                .unwrap();
 
             let start = Instant::now();
 
@@ -170,10 +168,10 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
             // Prepare the HTTP request to send to the server.
             let request = Request::builder()
-                            .method(Method::PUT)
-                            .uri(format!("https://{}/put", args.target))
-                            .body(())
-                            .unwrap();
+                .method(Method::PUT)
+                .uri(format!("https://{}/put", args.target))
+                .body(())
+                .unwrap();
 
             let start = Instant::now();
 
@@ -189,7 +187,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             while idx < value.len() {
                 stream.reserve_capacity(value.len() - idx);
                 let available = stream.capacity();
-                
+
                 let end = idx + available;
 
                 if available == 0 {
@@ -199,7 +197,9 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                 info!("TX: {available} bytes");
 
                 if end >= value.len() {
-                    stream.send_data(value.slice(idx..value.len()), true).unwrap();
+                    stream
+                        .send_data(value.slice(idx..value.len()), true)
+                        .unwrap();
                     break;
                 } else {
                     stream.send_data(value.slice(idx..end), false).unwrap();
@@ -248,8 +248,6 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             info!("latency: {latency} us");
         }
     }
-
-    
 
     Ok(())
 }
