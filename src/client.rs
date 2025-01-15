@@ -1,3 +1,5 @@
+use tokio::runtime::Builder;
+use tokio::runtime::Runtime;
 use bytes::Bytes;
 use bytes::BytesMut;
 use clap::Parser;
@@ -56,9 +58,14 @@ struct Args {
     count: usize,
 }
 
-#[tokio::main]
-pub async fn main() -> Result<(), Box<dyn Error>> {
+pub fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+
+    let rt = Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("h2perf-worker")
+        .thread_stack_size(3 * 1024 * 1024)
+        .build()?;
 
     let level = Level::Info;
 
@@ -80,13 +87,20 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .start();
 
     // spawn logging thread
-    tokio::spawn(async move {
+    rt.spawn(async move {
         loop {
             sleep(Duration::from_millis(1)).await;
             let _ = log.flush();
         }
     });
 
+    // Spawn the root task
+    rt.block_on(async {
+        client(args).await
+    })
+}
+
+async fn client(args: Args) -> Result<(), Box<dyn Error>> {
     // initialize a prng
     let mut rng = Xoshiro512PlusPlus::from_seed(Seed512::default());
 

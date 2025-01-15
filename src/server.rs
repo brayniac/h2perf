@@ -1,3 +1,5 @@
+use std::error::Error;
+use tokio::runtime::Builder;
 use bytes::BytesMut;
 use clap::Parser;
 use h2::server;
@@ -39,8 +41,14 @@ struct Args {
 }
 
 #[tokio::main]
-pub async fn main() {
+pub async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+
+    let rt = Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("h2perf-worker")
+        .thread_stack_size(3 * 1024 * 1024)
+        .build()?;
 
     let level = Level::Info;
 
@@ -62,12 +70,21 @@ pub async fn main() {
         .start();
 
     // spawn logging thread
-    tokio::spawn(async move {
+    rt.spawn(async move {
         loop {
             sleep(Duration::from_millis(1)).await;
             let _ = log.flush();
         }
     });
+
+    // Spawn the root task
+    rt.block_on(async {
+        server(args).await
+    })
+
+}
+
+async fn server(args: Args) -> Result<(), Box<dyn Error>> {
 
     let listener = TcpListener::bind(args.listen).await.unwrap();
 
